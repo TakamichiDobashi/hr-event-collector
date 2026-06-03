@@ -540,11 +540,11 @@ class EventWriterAgent:
 
         # ── X投稿セクション ──────────────────────────────────
         if x_events:
-            blocks.append(heading("𝕏 X（Twitter）投稿からのイベント情報", 2))
+            blocks.append(heading("🐦 X（Twitter）投稿からのイベント情報", 2))
             blocks.append(callout(
                 "設定ファイルに登録されたX投稿URLから取得したイベント情報です。\n"
                 "config/settings.json の x_post_urls にURLを追加してください。",
-                "𝕏", "gray_background"
+                "📢", "gray_background"
             ))
             for ev in x_events:
                 pd      = ev.get("parsed_date")
