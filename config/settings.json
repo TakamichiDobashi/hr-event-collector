@@ -1,0 +1,37 @@
+{
+  "days_ahead": 30,
+  "max_events_per_keyword": 10,
+  "categories": [
+    {
+      "key": "recruiting",
+      "name": "採用",
+      "emoji": "💼",
+      "connpass_keywords": ["採用", "リクルーター", "採用担当", "採用ピッチ"],
+      "x_query": "人事 採用 勉強会 OR イベント OR セミナー 参加者募集"
+    },
+    {
+      "key": "labor",
+      "name": "労務",
+      "emoji": "📋",
+      "connpass_keywords": ["労務", "人事労務", "社会保険", "就業規則"],
+      "x_query": "労務 人事 勉強会 OR セミナー OR 研究会 参加者募集"
+    },
+    {
+      "key": "org_dev",
+      "name": "組織開発",
+      "emoji": "🤝",
+      "connpass_keywords": ["組織開発", "エンゲージメント", "1on1", "ピープルマネジメント"],
+      "x_query": "組織開発 OR 組織づくり 勉強会 OR イベント 参加者募集"
+    },
+    {
+      "key": "talent_dev",
+      "name": "人材育成",
+      "emoji": "🌱",
+      "connpass_keywords": ["人材育成", "タレントマネジメント", "研修", "リーダーシップ開発"],
+      "x_query": "人材育成 OR タレントマネジメント 勉強会 OR セミナー 参加者募集"
+    }
+  ],
+  "notion": {
+    "title_prefix": "🗓️ 人事キャリア イベント情報"
+  }
+}

@@ -1,0 +1,34 @@
+name: HR Event Collector
+
+on:
+  schedule:
+    # 毎週月曜 8:00 JST（= 日曜 23:00 UTC）に実行
+    - cron: '0 23 * * 0'
+  workflow_dispatch:
+
+jobs:
+  collect-events:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: コードをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: |
+          pip install \
+            anthropic \
+            notion-client \
+            requests
+
+      - name: 人事イベント情報を収集してNotionに投稿
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_EVENTS_PAGE_ID: ${{ secrets.NOTION_EVENTS_PAGE_ID }}
+        run: python scripts/hr_event_collector.py
