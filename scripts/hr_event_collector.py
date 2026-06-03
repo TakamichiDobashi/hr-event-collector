@@ -27,6 +27,36 @@ from urllib.error import URLError
 import anthropic
 from notion_client import Client as NotionClient
 
+
+# ── Claude API 呼び出しのリトライラッパー ─────────────────
+
+def claude_create_with_retry(client: anthropic.Anthropic,
+                              max_retries: int = 3, **kwargs):
+    """
+    Anthropic APIの一時的な接続エラー（APIConnectionError）に対して
+    指数バックオフでリトライする。
+    """
+    for attempt in range(max_retries):
+        try:
+            return client.messages.create(**kwargs)
+        except anthropic.APIConnectionError as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt   # 1秒 → 2秒 → 4秒
+                print(f"  ⚠️  接続エラー。{wait}秒後にリトライ "
+                      f"({attempt + 1}/{max_retries}): {e}")
+                time.sleep(wait)
+            else:
+                print(f"  ❌ リトライ上限到達。スキップします: {e}")
+                raise
+        except anthropic.APIStatusError as e:
+            # 429 Rate Limit は少し待ってリトライ
+            if e.status_code == 429 and attempt < max_retries - 1:
+                wait = 5 * (attempt + 1)
+                print(f"  ⚠️  レート制限。{wait}秒後にリトライ ({attempt + 1}/{max_retries})")
+                time.sleep(wait)
+            else:
+                raise
+
 # ── 定数 ──────────────────────────────────────────────────
 
 JST = timezone(timedelta(hours=9))
@@ -157,12 +187,17 @@ class EventParserAgent:
 
 イベント告知が1件も見つからない場合は空の配列 [] を返してください。"""
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=2000,
-            system=self.SYSTEM,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = claude_create_with_retry(
+                self.client,
+                model=self.model,
+                max_tokens=2000,
+                system=self.SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except anthropic.APIConnectionError:
+            print(f"  EventParserAgent（{category_name}）: 接続失敗のためスキップ")
+            return []
 
         text = response.content[0].text
         text = re.sub(r'```(?:json)?\s*', '', text).strip()
@@ -230,10 +265,14 @@ X（旧Twitter/x.com）で告知されている人事・HR系の勉強会・セ�
 
         for _ in range(5):
             try:
-                response = self.client.messages.create(
+                response = claude_create_with_retry(
+                    self.client,
                     model=self.model, max_tokens=1500,
                     system=self.SYSTEM, tools=tools, messages=messages
                 )
+            except anthropic.APIConnectionError as e:
+                print(f"  XEventAgent 接続失敗のためスキップ: {e}")
+                return []
             except Exception as e:
                 print(f"  XEventAgent APIエラー: {e}")
                 return []
