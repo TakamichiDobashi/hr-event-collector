@@ -20,15 +20,10 @@ jobs:
           python-version: '3.11'
 
       - name: 依存パッケージをインストール
-        run: |
-          pip install \
-            anthropic \
-            notion-client \
-            requests
+        run: pip install notion-client
 
       - name: 人事イベント情報を収集してNotionに投稿
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_EVENTS_PAGE_ID: ${{ secrets.NOTION_EVENTS_PAGE_ID }}
         run: python scripts/hr_event_collector.py
