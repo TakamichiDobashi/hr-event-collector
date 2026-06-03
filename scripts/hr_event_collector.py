@@ -249,10 +249,16 @@ class EventWriterAgent:
         def divider():
             return {"object": "block", "type": "divider", "divider": {}}
 
-        title       = f"{title_prefix} {run_dt.strftime('%Y/%m/%d')}"
-        total       = sum(len(r["events"]) for r in results)
-        run_to      = (run_dt + timedelta(days=30)).strftime("%-m/%-d")
+        MAX_PER_CAT = 15   # カテゴリごとの最大表示件数
+        CHUNK_SIZE  = 90   # Notion APIの1回あたりの上限（余裕を持って90）
 
+        title = f"{title_prefix} {run_dt.strftime('%Y/%m/%d')}"
+
+        # 各カテゴリの表示件数を制限
+        for r in results:
+            r["events"] = r["events"][:MAX_PER_CAT]
+
+        total = sum(len(r["events"]) for r in results)
         summary_parts = [
             f"{r['category']['emoji']} {r['category']['name']}："
             f"{len(r['events'])}件"
@@ -261,9 +267,9 @@ class EventWriterAgent:
 
         blocks = []
         blocks.append(callout(
-            f"Google News から収集した人事キャリア関連 勉強会・セミナー情報\n\n"
+            "Google News から収集した人事キャリア関連 勉強会・セミナー情報\n\n"
             + "　｜　".join(summary_parts)
-            + f"\n\n📰 合計 {total}件",
+            + f"\n\n📰 合計 {total}件（各カテゴリ最大{MAX_PER_CAT}件表示）",
             "🗓️", "green_background"
         ))
         blocks.append(divider())
@@ -303,15 +309,27 @@ class EventWriterAgent:
 
             blocks.append(divider())
 
-        # Notionページ作成
+        # Notionページ作成（最初の CHUNK_SIZE ブロックのみ）
+        first_chunk = blocks[:CHUNK_SIZE]
+        remaining   = blocks[CHUNK_SIZE:]
+
         response = notion.pages.create(
             parent={"page_id": parent_page_id},
             icon={"type": "emoji", "emoji": "🗓️"},
             properties={"title": {"title": [
                 {"type": "text", "text": {"content": title}}
             ]}},
-            children=blocks
+            children=first_chunk
         )
+        page_id  = response["id"]
+        page_url = response["url"]
+
+        # 残りのブロックを CHUNK_SIZE ずつ追加
+        for i in range(0, len(remaining), CHUNK_SIZE):
+            chunk = remaining[i:i + CHUNK_SIZE]
+            notion.blocks.children.append(block_id=page_id, children=chunk)
+            time.sleep(0.3)
+        print(f"  ページ作成完了（合計 {len(blocks)} ブロック）")
         page_id  = response["id"]
         page_url = response["url"]
 
