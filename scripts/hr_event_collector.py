@@ -1,15 +1,16 @@
 """
-人事キャリア形成 外部イベント情報 自動収集スクリプト
+人事キャリア形成 外部イベント情報 自動収集スクリプト（Google News RSS版）
 
 採用・労務・組織開発・人材育成の各カテゴリについて
-Connpass API と X（web_search）からイベント情報を収集し
-Notion にカテゴリ別整理して投稿する。
+Google News RSS と X（web_search）からイベント告知を収集し、
+Claudeでイベント情報を抽出してNotionにカテゴリ別整理して投稿する。
 
 【アーキテクチャ: Mgr型サブエージェントパターン】
-  EventDigestManager
-      ├─ CategoryEventAgent × 4カテゴリ（並列的に処理）
-      │     ├─ ConnpassCollector  : Connpass APIからイベント収集
-      │     └─ XEventAgent        : X/web_searchからイベント情報収集
+  EventDigestManager（Manager役）
+      ├─ CategoryEventAgent × 4カテゴリ
+      │     ├─ NewsEventCollector : Google News RSSからイベント告知を収集
+      │     ├─ EventParserAgent   : Claudeでイベント情報を構造化抽出
+      │     └─ XEventAgent        : web_searchでX投稿を収集
       └─ EventWriterAgent         : Notionに統合ページを投稿
 """
 
@@ -17,8 +18,11 @@ import os
 import json
 import re
 import time
-import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
 import anthropic
 from notion_client import Client as NotionClient
@@ -26,15 +30,13 @@ from notion_client import Client as NotionClient
 # ── 定数 ──────────────────────────────────────────────────
 
 JST = timezone(timedelta(hours=9))
-CONNPASS_API = "https://connpass.com/api/v1/event/"
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "../config/settings.json")
 
 WEEKDAY_JA = {"Mon": "月", "Tue": "火", "Wed": "水",
                "Thu": "木", "Fri": "金", "Sat": "土", "Sun": "日"}
 
 
-def date_label(dt: datetime) -> str:
-    s = dt.strftime("%-m/%-d（%a）")
+def date_label(s: str) -> str:
     for en, ja in WEEKDAY_JA.items():
         s = s.replace(en, ja)
     return s
@@ -47,111 +49,139 @@ def load_settings() -> dict:
         return json.load(f)
 
 
-# ── Connpass API でイベントを収集 ─────────────────────────
+# ── Google News RSS でイベント告知を収集 ──────────────────
 
-class ConnpassCollector:
+class NewsEventCollector:
     """
-    Connpass APIを使って人事系イベントを収集するコレクター。
-    APIキー不要・無料で利用可能。
+    Google News RSSを使ってイベント告知記事を収集する。
+    APIキー不要・無料で利用可能（hr-weekly-digestと同じ仕組み）。
     """
 
-    def fetch(self, keywords: list[str], days_ahead: int,
-              max_per_keyword: int) -> list[dict]:
-        """
-        複数キーワードでイベントを検索し、重複を除去して返す。
-
-        Connpass API v1 は ymd_from/ymd_to に対応していないため、
-        キーワード検索後にPythonで日付フィルタリングを行う。
-        """
-        today    = datetime.now(JST).date()
-        end_date = today + timedelta(days=days_ahead)
-
-        seen_ids   = set()
-        all_events = []
+    def fetch(self, keywords: list[str], max_per_keyword: int) -> list[dict]:
+        """複数キーワードでGoogle News RSSを検索し、重複除去して返す"""
+        seen_urls = set()
+        all_articles = []
 
         for keyword in keywords:
+            url = (
+                f"https://news.google.com/rss/search"
+                f"?q={quote(keyword)}&hl=ja&gl=JP&ceid=JP:ja"
+            )
             try:
-                resp = requests.get(
-                    CONNPASS_API,
-                    params={
-                        "keyword": keyword,
-                        "count":   min(max_per_keyword, 100),
-                        "order":   2,   # 開催日時昇順
-                    },
-                    timeout=10
-                )
+                req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urlopen(req, timeout=10) as resp:
+                    tree = ET.parse(resp)
 
-                if resp.status_code != 200:
-                    print(f"  Connpass APIエラー: {resp.status_code} (keyword={keyword})")
-                    continue
-
-                data   = resp.json()
-                events = data.get("events", [])
-                print(f"  Connpass [{keyword}]: API取得 {len(events)}件")
-
-                for event in events:
-                    eid = event.get("event_id")
-                    if not eid or eid in seen_ids:
+                items = tree.findall(".//item")[:max_per_keyword]
+                for item in items:
+                    link = item.findtext("link", "").strip()
+                    if link in seen_urls:
                         continue
+                    seen_urls.add(link)
 
-                    # ── 日付フィルタリング（今日〜days_ahead日後） ──
-                    started_raw = event.get("started_at", "")
-                    if started_raw:
-                        try:
-                            started_dt = datetime.fromisoformat(
-                                started_raw.replace("Z", "+00:00")
-                            ).astimezone(JST)
-                            if not (today <= started_dt.date() <= end_date):
-                                continue
-                        except ValueError:
-                            continue
+                    title       = item.findtext("title", "").strip()
+                    description = item.findtext("description", "").strip()
+                    description = re.sub(r"<[^>]+>", "", description)[:300]
+                    pub_date    = item.findtext("pubDate", "").strip()
 
-                    seen_ids.add(eid)
-                    all_events.append(self._normalize(event))
+                    if title:
+                        all_articles.append({
+                            "title":       title,
+                            "url":         link,
+                            "description": description,
+                            "pub_date":    pub_date,
+                            "keyword":     keyword,
+                        })
 
-                time.sleep(0.5)  # レート制限対応
+                time.sleep(0.3)
 
-            except Exception as e:
-                print(f"  Connpass取得エラー ({keyword}): {e}")
+            except URLError as e:
+                print(f"  Google News RSSエラー ({keyword}): {e}")
                 continue
 
-        print(f"  Connpass 合計（重複除去後）: {len(all_events)}件")
+        print(f"  Google News RSS: 合計 {len(all_articles)}件の記事を収集")
+        return all_articles
 
-        # 開催日順にソート
-        all_events.sort(key=lambda e: e["started_at"])
-        return all_events
 
-    def _normalize(self, raw: dict) -> dict:
-        """APIレスポンスを扱いやすい形に整形する"""
-        started_raw = raw.get("started_at", "")
-        started_dt = None
-        if started_raw:
+# ── Claude でイベント情報を抽出 ───────────────────────────
+
+class EventParserAgent:
+    """
+    Google News記事からイベント告知を判定・抽出するサブエージェント。
+    「これはイベント告知か？」をAIが判断し、詳細を構造化する。
+    """
+
+    SYSTEM = """あなたは人事・HR分野のイベント情報を収集する専門家です。
+提供されたニュース記事の中から「今後開催される勉強会・セミナー・イベント」の
+告知記事だけを選び、イベント情報を日本語で構造化して抽出してください。
+必ずJSON配列のみを返し、他のテキストは含めないでください。"""
+
+    def __init__(self, client: anthropic.Anthropic,
+                 model: str = "claude-haiku-4-5-20251001"):
+        self.client = client
+        self.model  = model
+
+    def parse(self, category_name: str, articles: list[dict]) -> list[dict]:
+        if not articles:
+            return []
+
+        articles_text = "\n\n".join([
+            f"【{i+1}】タイトル: {a['title']}\n"
+            f"URL: {a['url']}\n"
+            f"概要: {a['description']}"
+            for i, a in enumerate(articles)
+        ])
+
+        prompt = f"""以下の記事（{len(articles)}件）の中から、
+「{category_name}」分野の今後開催予定の勉強会・セミナー・イベントの告知記事を選び、
+イベント情報を抽出してください。
+
+過去に終了したイベントや、単なるニュース記事は除外してください。
+
+## 記事一覧
+{articles_text}
+
+抽出したイベントを以下のJSON配列形式のみで返してください：
+[
+  {{
+    "title": "イベント・勉強会のタイトル",
+    "date": "開催日時（記事から読み取れる場合。不明なら空文字）",
+    "format": "オンライン or オフライン or ハイブリッド or 不明",
+    "location": "開催場所（オフラインの場合）",
+    "organizer": "主催者・団体名",
+    "summary": "イベント概要（2〜3文）",
+    "url": "申し込み・詳細ページのURL",
+    "fee": "参加費（無料 / 有料 / 不明）"
+  }}
+]
+
+イベント告知が1件も見つからない場合は空の配列 [] を返してください。"""
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2000,
+            system=self.SYSTEM,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        text = response.content[0].text
+        text = re.sub(r'```(?:json)?\s*', '', text).strip()
+
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if json_match:
             try:
-                started_dt = datetime.fromisoformat(
-                    started_raw.replace("Z", "+00:00")).astimezone(JST)
-            except ValueError:
-                pass
+                events = json.loads(json_match.group())
+                print(f"  EventParserAgent（{category_name}）: {len(events)}件のイベントを抽出")
+                return events
+            except json.JSONDecodeError:
+                cleaned = re.sub(r',\s*([}\]])', r'\1', json_match.group())
+                try:
+                    return json.loads(cleaned)
+                except json.JSONDecodeError:
+                    pass
 
-        place = raw.get("place", "") or ""
-        address = raw.get("address", "") or ""
-        is_online = any(w in (place + address).lower()
-                        for w in ["online", "オンライン", "zoom", "teams", "meet"])
-
-        return {
-            "event_id":     raw.get("event_id"),
-            "title":        raw.get("title", ""),
-            "url":          raw.get("event_url", ""),
-            "started_at":   started_raw,
-            "started_dt":   started_dt,
-            "date_label":   date_label(started_dt) if started_dt else "日時未定",
-            "place":        place or ("オンライン" if is_online else ""),
-            "is_online":    is_online,
-            "description":  (raw.get("description") or "")[:300].strip(),
-            "catch":        (raw.get("catch") or "").strip(),
-            "limit":        raw.get("limit", 0),
-            "accepted":     raw.get("accepted", 0),
-            "owner_name":   raw.get("owner_display_name", ""),
-        }
+        print(f"  EventParserAgent（{category_name}）: 抽出できませんでした")
+        return []
 
 
 # ── X投稿からイベント情報を収集（web_search） ─────────────
@@ -170,7 +200,7 @@ X（旧Twitter/x.com）で告知されている人事・HR系の勉強会・セ�
     def __init__(self, client: anthropic.Anthropic,
                  model: str = "claude-haiku-4-5-20251001"):
         self.client = client
-        self.model = model
+        self.model  = model
 
     def collect(self, category_name: str, query: str) -> list[dict]:
         prompt = f"""X（旧Twitter / x.com）で告知されている「{category_name}」分野の
@@ -185,14 +215,14 @@ X（旧Twitter/x.com）で告知されている人事・HR系の勉強会・セ�
     "date": "開催日（わかる場合）",
     "format": "オンライン or オフライン or 不明",
     "summary": "イベント概要（2〜3文）",
-    "url": "告知URL or 投稿URL（あれば）",
+    "url": "告知URL（あれば）",
     "source": "情報源（アカウント名など）"
   }}
 ]
 
 見つからない場合は空の配列 [] を返してください。"""
 
-        tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+        tools    = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
         messages = [{"role": "user", "content": prompt}]
 
         print(f"  XEventAgent（{category_name}）: web_searchで検索中...")
@@ -201,11 +231,8 @@ X（旧Twitter/x.com）で告知されている人事・HR系の勉強会・セ�
         for _ in range(5):
             try:
                 response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=1500,
-                    system=self.SYSTEM,
-                    tools=tools,
-                    messages=messages
+                    model=self.model, max_tokens=1500,
+                    system=self.SYSTEM, tools=tools, messages=messages
                 )
             except Exception as e:
                 print(f"  XEventAgent APIエラー: {e}")
@@ -248,43 +275,39 @@ X（旧Twitter/x.com）で告知されている人事・HR系の勉強会・セ�
 # ── カテゴリ担当エージェント ──────────────────────────────
 
 class CategoryEventAgent:
-    """
-    1カテゴリのイベントを収集するサブエージェント。
-    Connpass + X両方から情報を集める。
-    """
+    """1カテゴリのイベントを収集・抽出するサブエージェント"""
 
     def __init__(self, claude: anthropic.Anthropic):
-        self.connpass = ConnpassCollector()
-        self.x_agent  = XEventAgent(claude)
+        self.collector = NewsEventCollector()
+        self.parser    = EventParserAgent(claude)
+        self.x_agent   = XEventAgent(claude)
 
-    def collect(self, category: dict, days_ahead: int,
-                max_per_keyword: int) -> dict:
+    def collect(self, category: dict, max_per_keyword: int) -> dict:
         name = category["name"]
-        print(f"\n  [{name}] Connpass からイベント収集中...")
-        connpass_events = self.connpass.fetch(
-            category["connpass_keywords"], days_ahead, max_per_keyword
+        print(f"\n  [{name}] Google News RSSからイベント告知を収集中...")
+
+        articles = self.collector.fetch(
+            category["news_keywords"], max_per_keyword
         )
-        print(f"  [{name}] Connpass: {len(connpass_events)}件")
+        events = self.parser.parse(name, articles)
 
         x_events = self.x_agent.collect(name, category["x_query"])
 
         return {
-            "category":        category,
-            "connpass_events": connpass_events,
-            "x_events":        x_events,
+            "category": category,
+            "events":   events,
+            "x_events": x_events,
         }
 
 
 # ── Notion に投稿 ─────────────────────────────────────────
 
 class EventWriterAgent:
-    """収集したイベント情報をNotionにカテゴリ別整理して投稿するエージェント"""
 
     def post(self, notion: NotionClient, parent_page_id: str,
              results: list[dict], run_dt: datetime,
              title_prefix: str) -> dict:
 
-        # ── Notionブロックのヘルパー ──
         def callout(text, emoji, color):
             return {
                 "object": "block", "type": "callout",
@@ -297,7 +320,8 @@ class EventWriterAgent:
         def heading(text, level=2):
             t = f"heading_{level}"
             return {"object": "block", "type": t,
-                    t: {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+                    t: {"rich_text": [{"type": "text",
+                        "text": {"content": text}}]}}
 
         def paragraph(text, url=None, bold=False):
             rich = {"type": "text", "text": {"content": text}}
@@ -308,7 +332,7 @@ class EventWriterAgent:
             return {"object": "block", "type": "paragraph",
                     "paragraph": {"rich_text": [rich]}}
 
-        def quote(text):
+        def quote_block(text):
             return {"object": "block", "type": "quote",
                     "quote": {"rich_text": [{"type": "text",
                               "text": {"content": text}}]}}
@@ -316,92 +340,96 @@ class EventWriterAgent:
         def divider():
             return {"object": "block", "type": "divider", "divider": {}}
 
-        # ── タイトル・サマリー ──
-        date_str = run_dt.strftime("%Y/%m/%d")
-        end_date = (run_dt + timedelta(days=30)).strftime("%-m/%-d")
-        title    = f"{title_prefix} {date_str}"
+        title = (
+            f"{title_prefix} "
+            f"{run_dt.strftime('%Y/%m/%d')}"
+        )
 
-        summary_parts = []
-        total_connpass = 0
-        for r in results:
-            cnt = len(r["connpass_events"])
-            total_connpass += cnt
-            summary_parts.append(f"{r['category']['emoji']} {r['category']['name']}：{cnt}件")
+        total_events = sum(len(r["events"]) for r in results)
+        total_x      = sum(len(r["x_events"]) for r in results)
+
+        summary_parts = [
+            f"{r['category']['emoji']} {r['category']['name']}：{len(r['events'])}件"
+            for r in results
+        ]
 
         blocks = []
-        summary_text = (
-            f"今後30日間（〜{end_date}）の人事キャリア関連イベント\n\n"
+        blocks.append(callout(
+            "Google News から収集した人事キャリア関連 勉強会・セミナー情報\n\n"
             + "　｜　".join(summary_parts)
-            + f"\n\n✅ Connpass 合計 {total_connpass}件 ＋ 𝕏 投稿情報"
-        )
-        blocks.append(callout(summary_text, "🗓️", "green_background"))
+            + f"\n\n📰 Google News 合計 {total_events}件"
+            + (f"  ＋  𝕏 {total_x}件" if total_x else ""),
+            "🗓️", "green_background"
+        ))
         blocks.append(divider())
 
-        # ── カテゴリ別セクション ──
         for r in results:
             cat      = r["category"]
-            c_events = r["connpass_events"]
+            events   = r["events"]
             x_events = r["x_events"]
 
             blocks.append(heading(
-                f"{cat['emoji']} {cat['name']}　（Connpass {len(c_events)}件）", 2
+                f"{cat['emoji']} {cat['name']}　（{len(events)}件）", 2
             ))
 
-            # Connpassイベント
-            if not c_events:
-                blocks.append(callout("今後30日間のイベントは見つかりませんでした。",
-                                      "📭", "gray_background"))
+            if not events:
+                blocks.append(callout(
+                    "今週は該当するイベント情報が見つかりませんでした。",
+                    "📭", "gray_background"
+                ))
             else:
-                for ev in c_events:
-                    # イベントカード
-                    loc_icon = "💻" if ev["is_online"] else "📍"
-                    loc_text = ev["place"] or ("オンライン" if ev["is_online"] else "")
-                    limit_text = ""
-                    if ev["limit"] and ev["accepted"] is not None:
-                        remaining = ev["limit"] - ev["accepted"]
-                        limit_text = f"　　残り {remaining}/{ev['limit']}席"
+                for ev in events:
+                    ev_title    = ev.get("title", "")
+                    ev_date     = ev.get("date", "")
+                    ev_format   = ev.get("format", "不明")
+                    ev_location = ev.get("location", "")
+                    ev_org      = ev.get("organizer", "")
+                    ev_summary  = ev.get("summary", "")
+                    ev_url      = ev.get("url") or None
+                    ev_fee      = ev.get("fee", "不明")
 
-                    detail_line = (
-                        f"📅 {ev['date_label']}"
-                        + (f"　{loc_icon} {loc_text}" if loc_text else "")
-                        + (f"　👤 {ev['owner_name']}" if ev["owner_name"] else "")
-                        + limit_text
-                    )
+                    # 見出し（タイトル）
+                    blocks.append(heading(ev_title, 3))
 
-                    blocks.append(heading(ev["title"], 3))
-                    blocks.append(paragraph(detail_line))
-                    if ev["catch"]:
-                        blocks.append(quote(ev["catch"]))
-                    if ev["url"]:
-                        blocks.append(paragraph("🔗 Connpass で詳細・申し込み", url=ev["url"]))
+                    # 詳細行
+                    detail_parts = []
+                    if ev_date:
+                        detail_parts.append(f"📅 {ev_date}")
+                    fmt_icon = "💻" if "オンライン" in ev_format else ("📍" if "オフライン" in ev_format else "📌")
+                    detail_parts.append(f"{fmt_icon} {ev_format}")
+                    if ev_location:
+                        detail_parts.append(f"📍 {ev_location}")
+                    if ev_fee and ev_fee != "不明":
+                        detail_parts.append(f"💰 {ev_fee}")
+                    if ev_org:
+                        detail_parts.append(f"🏢 {ev_org}")
+                    blocks.append(paragraph("　".join(detail_parts)))
 
-            # X イベント情報
+                    if ev_summary:
+                        blocks.append(quote_block(ev_summary))
+
+                    if ev_url:
+                        blocks.append(paragraph("🔗 詳細・申し込みはこちら", url=ev_url))
+
+            # X情報
             if x_events:
                 blocks.append(callout(
-                    f"𝕏 X（Twitter）で見つかったイベント情報（{len(x_events)}件）",
+                    f"𝕏 X（Twitter）で見つかったイベント告知（{len(x_events)}件）",
                     "𝕏", "purple_background"
                 ))
                 for xe in x_events:
-                    xe_title = xe.get("title", "")
-                    xe_date  = xe.get("date", "")
-                    xe_fmt   = xe.get("format", "")
-                    xe_sum   = xe.get("summary", "")
-                    xe_url   = xe.get("url") or None
-                    xe_src   = xe.get("source", "")
-
-                    header_parts = [xe_title]
-                    if xe_date:
-                        header_parts.append(f"📅 {xe_date}")
-                    if xe_fmt and xe_fmt != "不明":
-                        header_parts.append(f"💻 {xe_fmt}" if "オンライン" in xe_fmt else f"📍 {xe_fmt}")
-
-                    blocks.append(paragraph("　".join(header_parts), bold=True))
-                    if xe_sum:
-                        blocks.append(paragraph(xe_sum))
-                    if xe_url:
-                        blocks.append(paragraph("🔗 詳細・告知を見る", url=xe_url))
-                    if xe_src:
-                        blocks.append(paragraph(f"情報源：{xe_src}"))
+                    parts = [xe.get("title", "")]
+                    if xe.get("date"):
+                        parts.append(f"📅 {xe['date']}")
+                    if xe.get("format") and xe["format"] != "不明":
+                        parts.append(f"💻 {xe['format']}")
+                    blocks.append(paragraph("　".join(filter(None, parts)), bold=True))
+                    if xe.get("summary"):
+                        blocks.append(paragraph(xe["summary"]))
+                    if xe.get("url"):
+                        blocks.append(paragraph("🔗 詳細を見る", url=xe["url"]))
+                    if xe.get("source"):
+                        blocks.append(paragraph(f"情報源：{xe['source']}"))
 
             blocks.append(divider())
 
@@ -424,19 +452,19 @@ class EventWriterAgent:
         for block in all_blocks:
             if block.get("type") == "heading_2":
                 texts = block["heading_2"].get("rich_text", [])
-                content = "".join(t.get("text", {}).get("content", "")
-                                  for t in texts)
+                content = "".join(
+                    t.get("text", {}).get("content", "") for t in texts)
                 if "一覧" in content or "アーカイブ" in content:
                     heading_id = block["id"]
                     break
 
-        date_label_str = run_dt.strftime("%-m/%-d")
         entry = {
             "object": "block", "type": "callout",
             "callout": {
                 "rich_text": [
                     {"type": "text",
-                     "text": {"content": f"🗓️ {date_label_str} 更新　計{total_connpass}件\n"},
+                     "text": {"content":
+                              f"🗓️ {run_dt.strftime('%-m/%-d')} 更新　計{total_events}件\n"},
                      "annotations": {"bold": True}},
                     {"type": "mention",
                      "mention": {"type": "page", "page": {"id": page_id}}}
@@ -455,7 +483,6 @@ class EventWriterAgent:
 # ── Manager ───────────────────────────────────────────────
 
 class EventDigestManager:
-    """Mgr型: 各カテゴリのエージェントを統括し結果をNotionに投稿する"""
 
     def __init__(self):
         self.settings = load_settings()
@@ -465,18 +492,17 @@ class EventDigestManager:
 
     def run(self):
         now        = datetime.now(JST)
-        days_ahead = self.settings.get("days_ahead", 30)
-        max_evts   = self.settings.get("max_events_per_keyword", 10)
+        max_arts   = self.settings.get("max_articles_per_keyword", 10)
         categories = self.settings["categories"]
 
         print(f"=== 人事イベント収集開始: {now.strftime('%Y/%m/%d %H:%M')} ===")
-        print(f"    対象カテゴリ: {len(categories)}個  取得期間: {days_ahead}日間")
+        print(f"    対象カテゴリ: {len(categories)}個")
 
         agent   = CategoryEventAgent(self.claude)
         results = []
 
         for cat in categories:
-            result = agent.collect(cat, days_ahead, max_evts)
+            result = agent.collect(cat, max_arts)
             results.append(result)
 
         print(f"\n[EventWriterAgent] Notionに投稿中...")

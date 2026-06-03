@@ -1,34 +1,49 @@
 {
-  "days_ahead": 30,
-  "max_events_per_keyword": 10,
+  "max_articles_per_keyword": 10,
   "categories": [
     {
       "key": "recruiting",
       "name": "採用",
       "emoji": "💼",
-      "connpass_keywords": ["採用", "リクルーター", "採用担当", "採用ピッチ"],
-      "x_query": "人事 採用 勉強会 OR イベント OR セミナー 参加者募集"
+      "news_keywords": [
+        "採用 勉強会 開催",
+        "採用担当 セミナー 申し込み",
+        "採用 イベント 参加者募集"
+      ],
+      "x_query": "人事 採用 勉強会 OR セミナー 参加者募集 site:x.com"
     },
     {
       "key": "labor",
       "name": "労務",
       "emoji": "📋",
-      "connpass_keywords": ["労務", "人事労務", "社会保険", "就業規則"],
-      "x_query": "労務 人事 勉強会 OR セミナー OR 研究会 参加者募集"
+      "news_keywords": [
+        "労務 勉強会 開催",
+        "人事労務 セミナー",
+        "社労士 研修会 参加"
+      ],
+      "x_query": "労務 人事 勉強会 OR セミナー 参加者募集 site:x.com"
     },
     {
       "key": "org_dev",
       "name": "組織開発",
       "emoji": "🤝",
-      "connpass_keywords": ["組織開発", "エンゲージメント", "1on1", "ピープルマネジメント"],
-      "x_query": "組織開発 OR 組織づくり 勉強会 OR イベント 参加者募集"
+      "news_keywords": [
+        "組織開発 勉強会 開催",
+        "エンゲージメント セミナー",
+        "1on1 ピープルマネジメント イベント"
+      ],
+      "x_query": "組織開発 勉強会 OR イベント 参加者募集 site:x.com"
     },
     {
       "key": "talent_dev",
       "name": "人材育成",
       "emoji": "🌱",
-      "connpass_keywords": ["人材育成", "タレントマネジメント", "研修", "リーダーシップ開発"],
-      "x_query": "人材育成 OR タレントマネジメント 勉強会 OR セミナー 参加者募集"
+      "news_keywords": [
+        "人材育成 研修 参加者募集",
+        "タレントマネジメント セミナー",
+        "リーダーシップ 研修会 開催"
+      ],
+      "x_query": "人材育成 タレントマネジメント 勉強会 OR セミナー 参加者募集 site:x.com"
     }
   ],
   "notion": {
