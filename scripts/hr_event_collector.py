@@ -19,6 +19,7 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 from typing import Optional
 
+import requests
 from notion_client import Client as NotionClient
 
 # ── 定数 ──────────────────────────────────────────────────
@@ -165,7 +166,8 @@ class NewsEventCollector:
 class EventArticleFilter:
 
     def filter_and_extract(self, articles: list[dict],
-                            category_name: str) -> list[dict]:
+                            category_name: str,
+                            skip_kanto_filter: bool = False) -> list[dict]:
         today    = date_type.today()
         ref_year = today.year
         end_date = today + timedelta(days=DAYS_AHEAD)
@@ -221,8 +223,8 @@ class EventArticleFilter:
             else:
                 fmt = "オフライン"  # 不明はオフライン扱いで関東チェック対象に
 
-            # ── フィルタ③：オフラインの場合は関東圏のみ（人事図書館は除く） ──
-            if fmt == "オフライン" and not is_jinjitoshokan:
+            # ── フィルタ③：オフラインの場合は関東圏のみ（skip_kanto_filter=True or 人事図書館は除く） ──
+            if fmt == "オフライン" and not is_jinjitoshokan and not skip_kanto_filter:
                 if not any(kw in text for kw in KANTO_KEYWORDS):
                     skipped["out_of_kanto"] += 1
                     continue
@@ -263,6 +265,82 @@ class EventArticleFilter:
         return events
 
 
+# ── X投稿URLから内容を取得 ────────────────────────────────
+
+class XPostCollector:
+    """
+    設定ファイルに記載された特定のX投稿URLから
+    投稿内容・イベント情報を直接取得する。
+    X APIなしで動作するが、指定URLのみが対象。
+    """
+
+    def fetch(self, post_urls: list[str]) -> list[dict]:
+        events = []
+        for url in post_urls:
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    )},
+                    timeout=10
+                )
+                if r.status_code != 200:
+                    print(f"  X投稿取得エラー: {r.status_code} ({url})")
+                    continue
+
+                # full_text を HTML から抽出
+                m = re.search(r'"full_text":"((?:[^"\\]|\\.)*)\"', r.text)
+                if not m:
+                    print(f"  X投稿: full_text 抽出できず ({url})")
+                    continue
+
+                text = m.group(1).replace("\\n", "\n").replace('\\"', '"')
+
+                # イベント関連かチェック
+                if not any(kw in text for kw in EVENT_KEYWORDS):
+                    print(f"  X投稿: イベントキーワードなし（スキップ）")
+                    continue
+
+                # アカウント名を取得
+                handle_m = re.search(r'x\.com/([^/]+)/status/', url)
+                account = f"@{handle_m.group(1)}" if handle_m else "X投稿"
+
+                # 日付を抽出
+                ref_year    = date_type.today().year
+                raw_date    = ""
+                parsed_date = None
+                for pat, _ in DATE_PATTERNS:
+                    dm = re.search(pat, text)
+                    if dm:
+                        raw_date    = dm.group()
+                        parsed_date = parse_japanese_date(raw_date, ref_year)
+                        break
+
+                events.append({
+                    "title":           text[:60].replace("\n", " ").strip() + "…",
+                    "date":            raw_date,
+                    "parsed_date":     parsed_date,
+                    "format":          "オンライン" if any(k.lower() in text.lower()
+                                        for k in ONLINE_KEYWORDS) else "不明",
+                    "summary":         text[:300],
+                    "url":             url,
+                    "fee":             "無料" if "無料" in text else "不明",
+                    "is_jinjitoshokan": False,
+                    "source":          account,
+                    "is_x_post":       True,
+                })
+                print(f"  X投稿取得: {account} - {text[:50]}...")
+                time.sleep(0.5)
+
+            except Exception as e:
+                print(f"  X投稿取得エラー: {e}")
+
+        return events
+
+
 # ── カテゴリ担当エージェント ──────────────────────────────
 
 class CategoryEventAgent:
@@ -272,11 +350,12 @@ class CategoryEventAgent:
         self.extractor = EventArticleFilter()
 
     def collect(self, category: dict, max_per_keyword: int) -> dict:
-        name = category["name"]
+        name              = category["name"]
+        skip_kanto        = category.get("skip_kanto_filter", False)
         print(f"\n  [{name}] Google News RSSからイベント告知を収集中...")
         articles = self.collector.fetch(category["news_keywords"], max_per_keyword)
         print(f"  [{name}] RSS取得: {len(articles)}件")
-        events = self.extractor.filter_and_extract(articles, name)
+        events = self.extractor.filter_and_extract(articles, name, skip_kanto)
         return {"category": category, "events": events}
 
 
@@ -289,7 +368,8 @@ class EventWriterAgent:
 
     def post(self, notion: NotionClient, parent_page_id: str,
              results: list[dict], run_dt: datetime,
-             title_prefix: str) -> dict:
+             title_prefix: str,
+             x_events: list = None) -> dict:
 
         today   = date_type.today()
         end_dt  = today + timedelta(days=DAYS_AHEAD)
@@ -348,7 +428,8 @@ class EventWriterAgent:
         for r in results:
             r["events"] = r["events"][:self.MAX_PER_CAT]
 
-        total = sum(len(r["events"]) for r in results)
+        x_events  = x_events or []
+        total     = sum(len(r["events"]) for r in results) + len(x_events)
         end_label = end_dt.strftime("%-m月%-d日")
 
         title = (f"{title_prefix} "
@@ -457,6 +538,46 @@ class EventWriterAgent:
 
             blocks.append(divider())
 
+        # ── X投稿セクション ──────────────────────────────────
+        if x_events:
+            blocks.append(heading("𝕏 X（Twitter）投稿からのイベント情報", 2))
+            blocks.append(callout(
+                "設定ファイルに登録されたX投稿URLから取得したイベント情報です。\n"
+                "config/settings.json の x_post_urls にURLを追加してください。",
+                "𝕏", "gray_background"
+            ))
+            for ev in x_events:
+                pd      = ev.get("parsed_date")
+                d_until = days_until(pd) if pd else None
+
+                if pd and d_until is not None:
+                    if d_until <= 7:
+                        date_str = f"📅  {date_display(pd)}  ━━  あと {d_until}日 🔴"
+                        bg = "red_background"
+                    elif d_until <= 14:
+                        date_str = f"📅  {date_display(pd)}  ━━  あと {d_until}日 🟠"
+                        bg = "orange_background"
+                    elif d_until <= 21:
+                        date_str = f"📅  {date_display(pd)}  ━━  あと {d_until}日 🟡"
+                        bg = "yellow_background"
+                    else:
+                        date_str = f"📅  {date_display(pd)}  ━━  あと {d_until}日"
+                        bg = "green_background"
+                else:
+                    date_str = "📅  開催日：投稿を確認"
+                    bg = "gray_background"
+
+                blocks.append(callout(date_str, "📅", bg))
+                source = ev.get("source", "X投稿")
+                blocks.append(heading(f"{source}  の投稿", 3))
+                if ev.get("summary"):
+                    blocks.append(quote_block(ev["summary"]))
+                if ev.get("url"):
+                    blocks.append(paragraph("🔗  元の投稿を見る", url=ev["url"], bold=True))
+                blocks.append(paragraph(""))
+
+            blocks.append(divider())
+
         # ── Notionページ作成（100ブロック制限に対応） ──────
         first_chunk = blocks[:self.CHUNK_SIZE]
         remaining   = blocks[self.CHUNK_SIZE:]
@@ -543,14 +664,24 @@ class EventDigestManager:
             result = agent.collect(cat, max_arts)
             results.append(result)
 
-        total = sum(len(r["events"]) for r in results)
+        # X投稿URLから追加収集
+        x_urls = self.settings.get("x_post_urls", [])
+        x_events = []
+        if x_urls:
+            print(f"\n  [X投稿] {len(x_urls)}件のURLから情報収集中...")
+            x_collector = XPostCollector()
+            x_events = x_collector.fetch(x_urls)
+            print(f"  [X投稿] {len(x_events)}件のイベント投稿を取得")
+
+        total = sum(len(r["events"]) for r in results) + len(x_events)
         print(f"\n合計 {total}件（今日〜1ヶ月以内）")
 
         print("\n[EventWriterAgent] Notionに投稿中...")
         writer = EventWriterAgent()
         info   = writer.post(
             self.notion, self.page_id, results, now,
-            self.settings["notion"]["title_prefix"]
+            self.settings["notion"]["title_prefix"],
+            x_events=x_events
         )
 
         print(f"\n=== 完了 ===")

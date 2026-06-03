@@ -1,50 +1,79 @@
 {
-  "max_articles_per_keyword": 10,
+  "max_articles_per_keyword": 15,
   "categories": [
+    {
+      "key": "jinjitoshokan",
+      "name": "人事図書館",
+      "emoji": "📚",
+      "skip_kanto_filter": true,
+      "news_keywords": [
+        "人事図書館 勉強会 OR イベント OR セミナー",
+        "人事図書館 開催",
+        "人事図書館 参加者募集"
+      ]
+    },
     {
       "key": "recruiting",
       "name": "採用",
       "emoji": "💼",
+      "skip_kanto_filter": false,
       "news_keywords": [
-        "採用 勉強会 開催",
-        "採用担当 セミナー 申し込み",
-        "採用 イベント 参加者募集"
-      ],
-      "x_query": "人事 採用 勉強会 OR セミナー 参加者募集 site:x.com"
+        "採用担当 勉強会 開催",
+        "採用 セミナー 参加者募集",
+        "人事採用 イベント 申し込み",
+        "採用ピッチ OR スカウト勉強会"
+      ]
     },
     {
       "key": "labor",
       "name": "労務",
       "emoji": "📋",
+      "skip_kanto_filter": false,
       "news_keywords": [
         "労務 勉強会 開催",
-        "人事労務 セミナー",
-        "社労士 研修会 参加"
-      ],
-      "x_query": "労務 人事 勉強会 OR セミナー 参加者募集 site:x.com"
+        "人事労務 セミナー 参加",
+        "社労士 研修会 申し込み"
+      ]
     },
     {
       "key": "org_dev",
       "name": "組織開発",
       "emoji": "🤝",
+      "skip_kanto_filter": false,
       "news_keywords": [
         "組織開発 勉強会 開催",
-        "エンゲージメント セミナー",
-        "1on1 ピープルマネジメント イベント"
-      ],
-      "x_query": "組織開発 勉強会 OR イベント 参加者募集 site:x.com"
+        "エンゲージメント セミナー 参加",
+        "1on1 ピープルマネジメント イベント",
+        "心理的安全性 勉強会"
+      ]
     },
     {
       "key": "talent_dev",
       "name": "人材育成",
       "emoji": "🌱",
+      "skip_kanto_filter": false,
       "news_keywords": [
         "人材育成 研修 参加者募集",
-        "タレントマネジメント セミナー",
-        "リーダーシップ 研修会 開催"
-      ],
-      "x_query": "人材育成 タレントマネジメント 勉強会 OR セミナー 参加者募集 site:x.com"
+        "タレントマネジメント セミナー 開催",
+        "リーダーシップ 研修会 申し込み",
+        "キャリア開発 勉強会"
+      ]
+    },
+    {
+      "key": "hr_general",
+      "name": "人事全般",
+      "emoji": "👥",
+      "skip_kanto_filter": false,
+      "news_keywords": [
+        "CHRO 人事責任者 勉強会",
+        "HRtech セミナー 参加",
+        "人的資本 イベント 開催",
+        "人事 交流会 参加者募集"
+      ]
     }
+  ],
+  "x_post_urls": [
+    "https://x.com/Taka_Dobashi/status/2062019262114664519"
   ],
   "notion": {
     "title_prefix": "🗓️ 人事キャリア イベント情報"

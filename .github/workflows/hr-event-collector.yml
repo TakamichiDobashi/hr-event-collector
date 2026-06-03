@@ -20,7 +20,7 @@ jobs:
           python-version: '3.11'
 
       - name: 依存パッケージをインストール
-        run: pip install notion-client
+        run: pip install notion-client requests
 
       - name: 人事イベント情報を収集してNotionに投稿
         env:
