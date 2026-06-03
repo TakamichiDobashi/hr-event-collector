@@ -26,7 +26,7 @@ from notion_client import Client as NotionClient
 # ── 定数 ──────────────────────────────────────────────────
 
 JST = timezone(timedelta(hours=9))
-CONNPASS_API = "https://connpass.com/api/v2/event/"
+CONNPASS_API = "https://connpass.com/api/v1/event/"
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "../config/settings.json")
 
 WEEKDAY_JA = {"Mon": "月", "Tue": "火", "Wed": "水",
@@ -57,13 +57,16 @@ class ConnpassCollector:
 
     def fetch(self, keywords: list[str], days_ahead: int,
               max_per_keyword: int) -> list[dict]:
-        """複数キーワードでイベントを検索し、重複を除去して返す"""
-        today = datetime.now(JST)
-        end_date = today + timedelta(days=days_ahead)
-        ymd_from = today.strftime("%Y%m%d")
-        ymd_to = end_date.strftime("%Y%m%d")
+        """
+        複数キーワードでイベントを検索し、重複を除去して返す。
 
-        seen_ids = set()
+        Connpass API v1 は ymd_from/ymd_to に対応していないため、
+        キーワード検索後にPythonで日付フィルタリングを行う。
+        """
+        today    = datetime.now(JST).date()
+        end_date = today + timedelta(days=days_ahead)
+
+        seen_ids   = set()
         all_events = []
 
         for keyword in keywords:
@@ -72,29 +75,47 @@ class ConnpassCollector:
                     CONNPASS_API,
                     params={
                         "keyword": keyword,
-                        "ymd_from": ymd_from,
-                        "ymd_to": ymd_to,
-                        "count": max_per_keyword,
-                        "order": 2,  # 開催日順
+                        "count":   min(max_per_keyword, 100),
+                        "order":   2,   # 開催日時昇順
                     },
                     timeout=10
                 )
+
                 if resp.status_code != 200:
                     print(f"  Connpass APIエラー: {resp.status_code} (keyword={keyword})")
                     continue
 
-                data = resp.json()
-                for event in data.get("events", []):
-                    eid = event.get("event_id")
-                    if eid and eid not in seen_ids:
-                        seen_ids.add(eid)
-                        all_events.append(self._normalize(event))
+                data   = resp.json()
+                events = data.get("events", [])
+                print(f"  Connpass [{keyword}]: API取得 {len(events)}件")
 
-                time.sleep(0.3)  # レート制限対応
+                for event in events:
+                    eid = event.get("event_id")
+                    if not eid or eid in seen_ids:
+                        continue
+
+                    # ── 日付フィルタリング（今日〜days_ahead日後） ──
+                    started_raw = event.get("started_at", "")
+                    if started_raw:
+                        try:
+                            started_dt = datetime.fromisoformat(
+                                started_raw.replace("Z", "+00:00")
+                            ).astimezone(JST)
+                            if not (today <= started_dt.date() <= end_date):
+                                continue
+                        except ValueError:
+                            continue
+
+                    seen_ids.add(eid)
+                    all_events.append(self._normalize(event))
+
+                time.sleep(0.5)  # レート制限対応
 
             except Exception as e:
                 print(f"  Connpass取得エラー ({keyword}): {e}")
                 continue
+
+        print(f"  Connpass 合計（重複除去後）: {len(all_events)}件")
 
         # 開催日順にソート
         all_events.sort(key=lambda e: e["started_at"])
