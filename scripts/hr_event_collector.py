@@ -44,6 +44,22 @@ ONLINE_KEYWORDS = [
     "ウェビナー", "webinar", "web開催",
 ]
 
+# 関東圏のキーワード（これが含まれるオフラインイベントは掲載）
+KANTO_KEYWORDS = [
+    # 都道府県
+    "東京", "神奈川", "埼玉", "千葉", "茨城", "群馬", "栃木",
+    # 主要エリア・駅周辺
+    "渋谷", "新宿", "六本木", "秋葉原", "銀座", "丸の内", "有楽町",
+    "品川", "恵比寿", "目黒", "池袋", "上野", "浅草", "赤坂",
+    "青山", "表参道", "原宿", "代官山", "大手町", "日本橋",
+    "虎ノ門", "霞が関", "永田町", "汐留", "浜松町",
+    "横浜", "川崎", "さいたま", "千葉市", "柏", "松戸",
+    "人形町",   # 人事図書館の所在地
+]
+
+# 人事図書館イベントを識別するキーワード（無条件で掲載）
+JINJITOSHOKAN_KEYWORDS = ["人事図書館", "人事図書館メンバー", "HRライブラリー"]
+
 DATE_PATTERNS = [
     (r'(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日', "ymd_full"),
     (r'(\d{1,2})月\s*(\d{1,2})日',              "md"),
@@ -150,13 +166,13 @@ class EventArticleFilter:
 
     def filter_and_extract(self, articles: list[dict],
                             category_name: str) -> list[dict]:
-        today     = date_type.today()
-        ref_year  = today.year
-        end_date  = today + timedelta(days=DAYS_AHEAD)
+        today    = date_type.today()
+        ref_year = today.year
+        end_date = today + timedelta(days=DAYS_AHEAD)
 
-        events_with_date   = []
-        events_no_date     = []
-        seen_titles        = set()
+        events     = []
+        seen_titles = set()
+        skipped    = {"past": 0, "no_date": 0, "out_of_kanto": 0}
 
         for article in articles:
             title = article["title"]
@@ -164,39 +180,54 @@ class EventArticleFilter:
             url   = article["url"]
             text  = title + " " + desc
 
-            # イベントキーワード判定
+            # ── イベントキーワード判定 ──
             if not any(kw in text for kw in EVENT_KEYWORDS):
                 continue
 
-            # タイトル重複除去
+            # ── タイトル重複除去 ──
             key = re.sub(r'\s+', '', title)[:30]
             if key in seen_titles:
                 continue
             seen_titles.add(key)
 
-            # 日付抽出・パース
-            raw_date     = ""
-            parsed_date  = None
+            # ── 人事図書館イベントは無条件で通過 ──
+            is_jinjitoshokan = any(kw in text for kw in JINJITOSHOKAN_KEYWORDS)
+
+            # ── 日付抽出・パース ──
+            raw_date    = ""
+            parsed_date = None
             for pat, _ in DATE_PATTERNS:
                 m = re.search(pat, text)
                 if m:
-                    raw_date = m.group()
+                    raw_date    = m.group()
                     parsed_date = parse_japanese_date(raw_date, ref_year)
                     break
 
-            # 日付がある場合：今日〜1ヶ月以内のみ
-            if parsed_date:
-                if parsed_date < today or parsed_date > end_date:
-                    continue   # 過去日 or 1ヶ月超は除外
+            # ── フィルタ①：日付不明は除外（人事図書館は除く） ──
+            if not parsed_date and not is_jinjitoshokan:
+                skipped["no_date"] += 1
+                continue
 
-            # 開催形式
+            # ── フィルタ②：今日〜1ヶ月以内のみ（人事図書館は除く） ──
+            if parsed_date and not is_jinjitoshokan:
+                if parsed_date < today or parsed_date > end_date:
+                    skipped["past"] += 1
+                    continue
+
+            # ── 開催形式を判定 ──
             text_lower = text.lower()
             if any(kw.lower() in text_lower for kw in ONLINE_KEYWORDS):
                 fmt = "オンライン"
             else:
-                fmt = "不明"
+                fmt = "オフライン"  # 不明はオフライン扱いで関東チェック対象に
 
-            # 参加費
+            # ── フィルタ③：オフラインの場合は関東圏のみ（人事図書館は除く） ──
+            if fmt == "オフライン" and not is_jinjitoshokan:
+                if not any(kw in text for kw in KANTO_KEYWORDS):
+                    skipped["out_of_kanto"] += 1
+                    continue
+
+            # ── 参加費を判定 ──
             if any(kw in text for kw in ["無料", "参加費無料", "参加無料"]):
                 fee = "無料"
             elif any(kw in text for kw in ["有料", "参加費", "円", "¥"]):
@@ -207,28 +238,29 @@ class EventArticleFilter:
             # タイトルから媒体名を除去
             clean_title = re.sub(r'\s*[-–—]\s*[^\-–—]+$', '', title).strip()
 
-            ev = {
-                "title":        clean_title or title,
-                "date":         raw_date,
-                "parsed_date":  parsed_date,
-                "format":       fmt,
-                "summary":      desc[:200],
-                "url":          url,
-                "fee":          fee,
-            }
+            events.append({
+                "title":           clean_title or title,
+                "date":            raw_date,
+                "parsed_date":     parsed_date,
+                "format":          fmt,
+                "summary":         desc[:200],
+                "url":             url,
+                "fee":             fee,
+                "is_jinjitoshokan": is_jinjitoshokan,
+            })
 
-            if parsed_date:
-                events_with_date.append(ev)
-            else:
-                events_no_date.append(ev)
+        # 開催日順にソート（人事図書館イベントは先頭に）
+        events.sort(key=lambda e: (
+            0 if e["is_jinjitoshokan"] else 1,
+            e["parsed_date"] if e["parsed_date"] else date_type(9999, 12, 31)
+        ))
 
-        # 開催日順にソート
-        events_with_date.sort(key=lambda e: e["parsed_date"])
-
-        result = events_with_date + events_no_date[:3]  # 日付不明は最大3件のみ
         print(f"  EventArticleFilter（{category_name}）: "
-              f"{len(articles)}件 → {len(result)}件（1ヶ月以内）")
-        return result
+              f"{len(articles)}件 → {len(events)}件採用"
+              f"（除外：日付不明{skipped['no_date']}件、"
+              f"過去日{skipped['past']}件、"
+              f"関東圏外{skipped['out_of_kanto']}件）")
+        return events
 
 
 # ── カテゴリ担当エージェント ──────────────────────────────
@@ -334,7 +366,7 @@ class EventWriterAgent:
         blocks.append(callout(
             f"📅  {today.strftime('%-m月%-d日')} 〜 {end_label} の人事キャリア関連イベント\n\n"
             + "　｜　".join(summary_parts)
-            + f"\n\n合計 {total}件　｜　過去日・1ヶ月超は除外済み",
+            + f"\n\n合計 {total}件　｜　今日以降1ヶ月分・関東圏のみ・日付不明除外",
             "🗓️", "blue_background"
         ))
         blocks.append(divider())
@@ -383,6 +415,12 @@ class EventWriterAgent:
                     bg = "gray_background"
 
                 blocks.append(callout(date_str, "📅", bg))
+
+                # 人事図書館バッジ
+                if ev.get("is_jinjitoshokan"):
+                    blocks.append(callout(
+                        "📚 人事図書館イベント", "📚", "purple_background"
+                    ))
 
                 # タイトル
                 blocks.append(heading(ev["title"], 3))
