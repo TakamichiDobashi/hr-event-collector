@@ -13,62 +13,64 @@
       ]
     },
     {
-      "key": "recruiting",
-      "name": "採用",
-      "emoji": "💼",
+      "key": "connpass",
+      "name": "Connpass",
+      "emoji": "🔵",
       "skip_kanto_filter": false,
       "news_keywords": [
-        "採用担当 勉強会 開催",
-        "採用 セミナー 参加者募集",
-        "人事採用 イベント 申し込み",
-        "採用ピッチ OR スカウト勉強会"
+        "connpass 人事 採用 勉強会",
+        "connpass HR 組織開発 ピープルマネジメント",
+        "connpass 人材育成 タレントマネジメント セミナー",
+        "connpass 労務 人事労務 開催"
       ]
     },
     {
-      "key": "labor",
-      "name": "労務",
-      "emoji": "📋",
+      "key": "peatix",
+      "name": "Peatix",
+      "emoji": "🎟️",
       "skip_kanto_filter": false,
       "news_keywords": [
-        "労務 勉強会 開催",
-        "人事労務 セミナー 参加",
-        "社労士 研修会 申し込み"
+        "peatix 人事 採用 セミナー",
+        "peatix HR 組織開発 勉強会",
+        "peatix 人材育成 リーダーシップ イベント",
+        "peatix 労務 人事労務 開催"
       ]
     },
     {
-      "key": "org_dev",
-      "name": "組織開発",
-      "emoji": "🤝",
+      "key": "hrpro_hrzine",
+      "name": "HRpro / HRzine",
+      "emoji": "📰",
       "skip_kanto_filter": false,
       "news_keywords": [
-        "組織開発 勉強会 開催",
-        "エンゲージメント セミナー 参加",
-        "1on1 ピープルマネジメント イベント",
-        "心理的安全性 勉強会"
+        "hrpro 人事 セミナー 参加者募集",
+        "hrzine セミナー 人事 参加",
+        "HRpro 採用 組織開発 イベント",
+        "HRzine 人材育成 勉強会 開催"
       ]
     },
     {
-      "key": "talent_dev",
-      "name": "人材育成",
-      "emoji": "🌱",
+      "key": "prtimes",
+      "name": "PR TIMES（イベント告知）",
+      "emoji": "📣",
       "skip_kanto_filter": false,
       "news_keywords": [
-        "人材育成 研修 参加者募集",
-        "タレントマネジメント セミナー 開催",
-        "リーダーシップ 研修会 申し込み",
-        "キャリア開発 勉強会"
+        "prtimes 人事 採用 勉強会 開催 参加者募集",
+        "prtimes 組織開発 エンゲージメント セミナー 開催",
+        "prtimes 人材育成 タレントマネジメント イベント",
+        "prtimes CHRO 人事責任者 勉強会 申し込み"
       ]
     },
     {
-      "key": "hr_general",
+      "key": "general_hr",
       "name": "人事全般",
       "emoji": "👥",
       "skip_kanto_filter": false,
       "news_keywords": [
-        "CHRO 人事責任者 勉強会",
-        "HRtech セミナー 参加",
-        "人的資本 イベント 開催",
-        "人事 交流会 参加者募集"
+        "採用担当 勉強会 開催 申し込み",
+        "人事 交流会 参加者募集 東京",
+        "CHRO 人事責任者 カンファレンス",
+        "HRtech AI 人事 セミナー 参加",
+        "人的資本 経営 イベント 開催"
       ]
     }
   ],

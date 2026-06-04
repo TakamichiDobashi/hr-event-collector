@@ -61,6 +61,31 @@ KANTO_KEYWORDS = [
 # 人事図書館イベントを識別するキーワード（無条件で掲載）
 JINJITOSHOKAN_KEYWORDS = ["人事図書館", "人事図書館メンバー", "HRライブラリー"]
 
+# ソース（プラットフォーム）検出ルール
+SOURCE_PATTERNS = [
+    ("🔵 Connpass",  ["connpass.com"]),
+    ("🎟️ Peatix",   ["peatix.com"]),
+    ("📰 HRpro",    ["hr-pro.co.jp", "hrpro.co.jp"]),
+    ("📋 HRzine",   ["hrzine.jp"]),
+    ("📣 PR TIMES", ["prtimes.jp"]),
+    ("🎮 TECH PLAY",["techplay.jp"]),
+    ("📚 人事図書館",["hr-library"]),
+]
+
+def detect_source(url: str, text: str) -> str:
+    """記事URLやテキストからソースを検出する"""
+    url_lower = url.lower()
+    for label, domains in SOURCE_PATTERNS:
+        if any(d in url_lower for d in domains):
+            return label
+    # URLに含まれなくてもテキストから推測
+    text_lower = text.lower()
+    for label, domains in SOURCE_PATTERNS:
+        if any(d.replace(".co.jp","").replace(".jp","").replace(".com","") in text_lower
+               for d in domains):
+            return label
+    return "📰 その他"
+
 DATE_PATTERNS = [
     (r'(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日', "ymd_full"),
     (r'(\d{1,2})月\s*(\d{1,2})日',              "md"),
@@ -241,14 +266,15 @@ class EventArticleFilter:
             clean_title = re.sub(r'\s*[-–—]\s*[^\-–—]+$', '', title).strip()
 
             events.append({
-                "title":           clean_title or title,
-                "date":            raw_date,
-                "parsed_date":     parsed_date,
-                "format":          fmt,
-                "summary":         desc[:200],
-                "url":             url,
-                "fee":             fee,
+                "title":            clean_title or title,
+                "date":             raw_date,
+                "parsed_date":      parsed_date,
+                "format":           fmt,
+                "summary":          desc[:200],
+                "url":              url,
+                "fee":              fee,
                 "is_jinjitoshokan": is_jinjitoshokan,
+                "source":           detect_source(url, text),
             })
 
         # 開催日順にソート（人事図書館イベントは先頭に）
@@ -518,6 +544,11 @@ class EventWriterAgent:
                     detail_parts.append("🆓 参加無料")
                 elif ev["fee"] == "有料":
                     detail_parts.append("💰 有料")
+
+                # ソースバッジを追加
+                source = ev.get("source", "")
+                if source:
+                    detail_parts.insert(0, source)
 
                 if detail_parts:
                     blocks.append(paragraph("　　".join(detail_parts)))
